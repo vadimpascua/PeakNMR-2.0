@@ -1,0 +1,80 @@
+import numpy as np
+import pandas as pd
+from tkinter import messagebox
+import file_io
+import globals
+
+def calculate_concentrations(tsp_concentration):
+    """Calculate concentrations for all spectra."""
+    if not globals.selected_pdata_dirs:
+        messagebox.showerror("Error", "Select a dataset first.")
+        return None
+
+    if globals.peak_limits.empty:
+        messagebox.showerror("Error", "No peak limits loaded.")
+        return None
+
+    results_concentration = []
+    results_area = []
+
+    for root_dir in globals.selected_pdata_dirs:
+        pdata_dirs = file_io.find_pdata_directories(root_dir)
+
+        for pdata_dir in pdata_dirs:
+            try:
+                # Load spectrum data
+                import nmrglue as ng
+                dic, data = ng.bruker.read_pdata(pdata_dir, scale_data=True)
+                udic = ng.bruker.guess_udic(dic, data)
+                uc = ng.fileiobase.uc_from_udic(udic)
+                ppm_scale = uc.ppm_scale()
+                sample_name = file_io.get_sample_name(pdata_dir)
+                
+                # Calculate reference peak area
+                ref_start = globals.peak_limits.at[0, "ppm start"]
+                ref_end = globals.peak_limits.at[0, "ppm end"]
+                ref_protons = globals.peak_limits.at[0, "# protons"]
+
+                ref_area = calculate_peak_area(ppm_scale, data, ref_start, ref_end)
+
+                # Calculate concentrations for other peaks
+                for _, row in globals.peak_limits.iloc[1:].iterrows():
+                    name = row["Peak identity"]
+                    start = row["ppm start"]
+                    end = row["ppm end"]
+                    nprotons = row["# protons"]
+
+                    area = calculate_peak_area(ppm_scale, data, start, end)
+                    results_area.append({
+                        "Sample": sample_name, 
+                        "Peak": name, 
+                        "Area": area, 
+                        "Parent File Path": pdata_dir
+                    })
+
+                    if tsp_concentration != 0:
+                        conc = (area/ref_area)*tsp_concentration*(ref_protons/nprotons)
+                        results_concentration.append({
+                            "Sample": sample_name, 
+                            "Peak": name, 
+                            "Concentration": conc, 
+                            "Parent File Path": pdata_dir
+                        })
+
+            except Exception as e:
+                continue
+
+    return results_concentration, results_area
+
+def calculate_peak_area(ppm_scale, data, start_ppm, end_ppm):
+    """Calculate peak area by summation."""
+    s = np.abs(ppm_scale - start_ppm).argmin()
+    e = np.abs(ppm_scale - end_ppm).argmin()
+    if s > e: 
+        s, e = e, s
+    return data[s:e+1].sum()
+
+def get_sample_name(pdata_dir):
+    """Extract sample name from pdata directory path."""
+    import os
+    return os.path.basename(os.path.dirname(os.path.dirname(pdata_dir)))
